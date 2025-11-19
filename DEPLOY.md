@@ -38,7 +38,7 @@ git push -u origin main
    - В проекте Railway → твой сервис → **Variables**
    - Нажми **"+ New Variable"**
    - Variable name: `DISCORD_BOT_TOKEN`
-   - Value: `MTQ0MDYyNjM2NTMyNDg1MzI3MQ.GSFzoq.T4fUC32dyAr3qjvueT2_AXv_ZmYIrHo6H3v4UI`
+   - Value: `**`
    - **Add**
 
 4. **Deploy!**

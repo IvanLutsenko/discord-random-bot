@@ -1,11 +1,12 @@
 import discord
 from discord import app_commands
 from discord.ext import commands
+from discord.ui import Button, View
 import random
 import json
 import os
 from datetime import datetime
-from typing import Optional, List
+from typing import List
 from dotenv import load_dotenv
 
 # Загружаем переменные из .env файла
@@ -19,7 +20,7 @@ intents.voice_states = True
 
 bot = commands.Bot(command_prefix='!', intents=intents)
 
-# История выборов
+# История выборов (для режима без повторов)
 class SelectionHistory:
     def __init__(self, filepath='history.json'):
         self.filepath = filepath
@@ -35,7 +36,7 @@ class SelectionHistory:
         with open(self.filepath, 'w', encoding='utf-8') as f:
             json.dump(self.history, f, ensure_ascii=False, indent=2)
     
-    def add_selection(self, guild_id: str, channel_id: str, mode: str, selected: List[str]):
+    def add_selection(self, guild_id: str, channel_id: str, selected: str):
         key = f"{guild_id}_{channel_id}"
         if key not in self.history:
             self.history[key] = {
@@ -45,14 +46,11 @@ class SelectionHistory:
         
         self.history[key]['selections'].append({
             'timestamp': datetime.now().isoformat(),
-            'mode': mode,
             'selected': selected
         })
         
-        # Добавляем в использованные для режима без повторов
-        self.history[key]['used_members'].extend(selected)
+        self.history[key]['used_members'].append(selected)
         
-        # Ограничиваем историю последними 100 выборами
         if len(self.history[key]['selections']) > 100:
             self.history[key]['selections'] = self.history[key]['selections'][-100:]
         
@@ -67,13 +65,63 @@ class SelectionHistory:
         if key in self.history:
             self.history[key]['used_members'] = []
             self.save_history()
-    
-    def get_recent_selections(self, guild_id: str, channel_id: str, limit: int = 10):
-        key = f"{guild_id}_{channel_id}"
-        selections = self.history.get(key, {}).get('selections', [])
-        return selections[-limit:]
 
 history = SelectionHistory()
+
+# View с кнопкой "Следующий"
+class NextButton(View):
+    def __init__(self, voice_channel: discord.VoiceChannel, guild_id: str, channel_id: str):
+        super().__init__(timeout=300)  # 5 минут timeout
+        self.voice_channel = voice_channel
+        self.guild_id = guild_id
+        self.channel_id = channel_id
+    
+    @discord.ui.button(label="➡️ Следующий", style=discord.ButtonStyle.primary)
+    async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+        
+        # Получаем онлайн участников из голосового канала
+        members = [m for m in self.voice_channel.members if not m.bot]
+        
+        if not members:
+            await interaction.followup.send("❌ В голосовом канале нет участников!", ephemeral=True)
+            return
+        
+        # Фильтруем уже использованных
+        used = history.get_used_members(self.guild_id, self.channel_id)
+        available = [m for m in members if str(m.id) not in used]
+        
+        # Если все использованы - автосброс
+        if not available:
+            history.reset_used_members(self.guild_id, self.channel_id)
+            available = members
+            reset_msg = "🔄 Все участники были выбраны! История сброшена.\n\n"
+        else:
+            reset_msg = ""
+        
+        # Выбираем случайного
+        selected = random.choice(available)
+        
+        # Сохраняем в историю
+        history.add_selection(self.guild_id, self.channel_id, str(selected.id))
+        
+        # Формируем ответ
+        embed = discord.Embed(
+            title="🎲 Следующий участник",
+            color=discord.Color.blue(),
+            timestamp=datetime.now()
+        )
+        
+        embed.description = f"{reset_msg}## 🎯 {selected.mention}\n\n**{selected.display_name}**"
+        embed.set_thumbnail(url=selected.display_avatar.url)
+        
+        remaining = len(available) - 1
+        embed.set_footer(text=f"Осталось участников: {remaining} из {len(members)}")
+        
+        # Создаём новую кнопку для следующего выбора
+        new_view = NextButton(self.voice_channel, self.guild_id, self.channel_id)
+        
+        await interaction.followup.send(embed=embed, view=new_view)
 
 @bot.event
 async def on_ready():
@@ -86,354 +134,107 @@ async def on_ready():
     except Exception as e:
         print(f'❌ Ошибка синхронизации команд: {e}')
 
-# Команда: случайный из всех участников
-@bot.tree.command(name="random", description="Выбрать случайного участника сервера")
-@app_commands.describe(
-    count="Сколько участников выбрать (по умолчанию: 1)",
-    no_repeat="Не повторять ранее выбранных (по умолчанию: False)"
-)
-async def random_member(
-    interaction: discord.Interaction,
-    count: Optional[int] = 1,
-    no_repeat: Optional[bool] = False
-):
+# Команда: случайный из голосового канала
+@bot.tree.command(name="random", description="Выбрать случайного участника из голосового канала (без повторов)")
+async def random_voice(interaction: discord.Interaction):
     await interaction.response.defer()
     
-    members = [m for m in interaction.guild.members if not m.bot]
-    
-    if not members:
-        await interaction.followup.send("❌ Нет доступных участников!")
+    # Проверяем что пользователь в голосовом канале
+    if interaction.user.voice is None:
+        await interaction.followup.send("❌ Ты не в голосовом канале! Зайди в голосовой канал и попробуй снова.")
         return
     
-    # Фильтруем уже использованных если включен режим без повторов
-    if no_repeat:
-        used = history.get_used_members(str(interaction.guild_id), str(interaction.channel_id))
-        members = [m for m in members if str(m.id) not in used]
-        
-        if not members:
-            await interaction.followup.send(
-                "❌ Все участники уже были выбраны! Используйте `/reset` для сброса истории."
-            )
-            return
+    voice_channel = interaction.user.voice.channel
     
-    count = min(count, len(members))
-    selected = random.sample(members, count)
+    # Получаем участников голосового канала (исключая ботов)
+    members = [m for m in voice_channel.members if not m.bot]
+    
+    if not members:
+        await interaction.followup.send(f"❌ В канале **{voice_channel.name}** нет участников!")
+        return
+    
+    # Фильтруем уже использованных участников
+    used = history.get_used_members(str(interaction.guild_id), str(interaction.channel_id))
+    available = [m for m in members if str(m.id) not in used]
+    
+    # Если все использованы - автоматический сброс
+    if not available:
+        history.reset_used_members(str(interaction.guild_id), str(interaction.channel_id))
+        available = members
+        reset_message = "🔄 Все участники были выбраны! История автоматически сброшена.\n\n"
+    else:
+        reset_message = ""
+    
+    # Выбираем случайного
+    selected = random.choice(available)
     
     # Сохраняем в историю
     history.add_selection(
         str(interaction.guild_id),
         str(interaction.channel_id),
-        "all",
-        [str(m.id) for m in selected]
+        str(selected.id)
     )
     
     # Формируем ответ
     embed = discord.Embed(
-        title="🎲 Случайный выбор",
+        title=f"🎲 Случайный выбор из 🔊 {voice_channel.name}",
         color=discord.Color.purple(),
         timestamp=datetime.now()
     )
     
-    if count == 1:
-        member = selected[0]
-        embed.description = f"## 🎯 {member.mention}\n\n**{member.display_name}**"
-        embed.set_thumbnail(url=member.display_avatar.url)
-    else:
-        embed.description = "\n".join([f"{i+1}. {m.mention} — **{m.display_name}**" for i, m in enumerate(selected)])
+    embed.description = f"{reset_message}## 🎯 {selected.mention}\n\n**{selected.display_name}**"
+    embed.set_thumbnail(url=selected.display_avatar.url)
     
-    embed.set_footer(text=f"Всего участников: {len(members)}")
+    remaining = len(available) - 1
+    embed.set_footer(text=f"Осталось участников: {remaining} из {len(members)}")
     
-    await interaction.followup.send(embed=embed)
-
-# Команда: случайный онлайн
-@bot.tree.command(name="random-online", description="Выбрать случайного участника онлайн")
-@app_commands.describe(
-    count="Сколько участников выбрать (по умолчанию: 1)",
-    no_repeat="Не повторять ранее выбранных (по умолчанию: False)"
-)
-async def random_online(
-    interaction: discord.Interaction,
-    count: Optional[int] = 1,
-    no_repeat: Optional[bool] = False
-):
-    await interaction.response.defer()
+    # Создаём view с кнопкой "Следующий"
+    view = NextButton(voice_channel, str(interaction.guild_id), str(interaction.channel_id))
     
-    members = [
-        m for m in interaction.guild.members 
-        if not m.bot and m.status != discord.Status.offline
-    ]
-    
-    if not members:
-        await interaction.followup.send("❌ Нет участников онлайн!")
-        return
-    
-    if no_repeat:
-        used = history.get_used_members(str(interaction.guild_id), str(interaction.channel_id))
-        members = [m for m in members if str(m.id) not in used]
-        
-        if not members:
-            await interaction.followup.send(
-                "❌ Все онлайн участники уже были выбраны! Используйте `/reset` для сброса."
-            )
-            return
-    
-    count = min(count, len(members))
-    selected = random.sample(members, count)
-    
-    history.add_selection(
-        str(interaction.guild_id),
-        str(interaction.channel_id),
-        "online",
-        [str(m.id) for m in selected]
-    )
-    
-    embed = discord.Embed(
-        title="🎲 Случайный выбор (Онлайн)",
-        color=discord.Color.green(),
-        timestamp=datetime.now()
-    )
-    
-    if count == 1:
-        member = selected[0]
-        embed.description = f"## 🎯 {member.mention}\n\n**{member.display_name}**"
-        embed.set_thumbnail(url=member.display_avatar.url)
-    else:
-        embed.description = "\n".join([f"{i+1}. {m.mention} — **{m.display_name}**" for i, m in enumerate(selected)])
-    
-    embed.set_footer(text=f"Онлайн: {len(members)}")
-    
-    await interaction.followup.send(embed=embed)
-
-# Команда: случайный из голосового канала
-@bot.tree.command(name="random-voice", description="Выбрать случайного участника из голосового канала")
-@app_commands.describe(
-    channel="Голосовой канал (если не указан - твой текущий канал)",
-    count="Сколько участников выбрать (по умолчанию: 1)",
-    no_repeat="Не повторять ранее выбранных (по умолчанию: False)"
-)
-async def random_voice(
-    interaction: discord.Interaction,
-    channel: Optional[discord.VoiceChannel] = None,
-    count: Optional[int] = 1,
-    no_repeat: Optional[bool] = False
-):
-    await interaction.response.defer()
-    
-    # Если канал не указан, берём канал пользователя
-    if channel is None:
-        if interaction.user.voice is None:
-            await interaction.followup.send("❌ Ты не в голосовом канале! Укажи канал или зайди в голосовой.")
-            return
-        channel = interaction.user.voice.channel
-    
-    members = [m for m in channel.members if not m.bot]
-    
-    if not members:
-        await interaction.followup.send(f"❌ В канале **{channel.name}** нет участников!")
-        return
-    
-    if no_repeat:
-        used = history.get_used_members(str(interaction.guild_id), str(interaction.channel_id))
-        members = [m for m in members if str(m.id) not in used]
-        
-        if not members:
-            await interaction.followup.send(
-                "❌ Все участники голосового канала уже были выбраны! Используйте `/reset`."
-            )
-            return
-    
-    count = min(count, len(members))
-    selected = random.sample(members, count)
-    
-    history.add_selection(
-        str(interaction.guild_id),
-        str(interaction.channel_id),
-        f"voice_{channel.id}",
-        [str(m.id) for m in selected]
-    )
-    
-    embed = discord.Embed(
-        title=f"🎲 Случайный выбор из 🔊 {channel.name}",
-        color=discord.Color.blue(),
-        timestamp=datetime.now()
-    )
-    
-    if count == 1:
-        member = selected[0]
-        embed.description = f"## 🎯 {member.mention}\n\n**{member.display_name}**"
-        embed.set_thumbnail(url=member.display_avatar.url)
-    else:
-        embed.description = "\n".join([f"{i+1}. {m.mention} — **{m.display_name}**" for i, m in enumerate(selected)])
-    
-    embed.set_footer(text=f"Участников в канале: {len(members)}")
-    
-    await interaction.followup.send(embed=embed)
-
-# Команда: случайный с определённой ролью
-@bot.tree.command(name="random-role", description="Выбрать случайного участника с определённой ролью")
-@app_commands.describe(
-    role="Роль для фильтрации",
-    count="Сколько участников выбрать (по умолчанию: 1)",
-    no_repeat="Не повторять ранее выбранных (по умолчанию: False)"
-)
-async def random_role(
-    interaction: discord.Interaction,
-    role: discord.Role,
-    count: Optional[int] = 1,
-    no_repeat: Optional[bool] = False
-):
-    await interaction.response.defer()
-    
-    members = [m for m in role.members if not m.bot]
-    
-    if not members:
-        await interaction.followup.send(f"❌ Нет участников с ролью **{role.name}**!")
-        return
-    
-    if no_repeat:
-        used = history.get_used_members(str(interaction.guild_id), str(interaction.channel_id))
-        members = [m for m in members if str(m.id) not in used]
-        
-        if not members:
-            await interaction.followup.send(
-                f"❌ Все участники с ролью **{role.name}** уже были выбраны! Используйте `/reset`."
-            )
-            return
-    
-    count = min(count, len(members))
-    selected = random.sample(members, count)
-    
-    history.add_selection(
-        str(interaction.guild_id),
-        str(interaction.channel_id),
-        f"role_{role.id}",
-        [str(m.id) for m in selected]
-    )
-    
-    embed = discord.Embed(
-        title=f"🎲 Случайный выбор из роли {role.name}",
-        color=role.color if role.color != discord.Color.default() else discord.Color.purple(),
-        timestamp=datetime.now()
-    )
-    
-    if count == 1:
-        member = selected[0]
-        embed.description = f"## 🎯 {member.mention}\n\n**{member.display_name}**"
-        embed.set_thumbnail(url=member.display_avatar.url)
-    else:
-        embed.description = "\n".join([f"{i+1}. {m.mention} — **{m.display_name}**" for i, m in enumerate(selected)])
-    
-    embed.set_footer(text=f"Участников с ролью: {len(members)}")
-    
-    await interaction.followup.send(embed=embed)
-
-# Команда: история выборов
-@bot.tree.command(name="history", description="Показать историю последних выборов")
-@app_commands.describe(limit="Сколько последних выборов показать (по умолчанию: 10)")
-async def show_history(interaction: discord.Interaction, limit: Optional[int] = 10):
-    await interaction.response.defer()
-    
-    selections = history.get_recent_selections(
-        str(interaction.guild_id),
-        str(interaction.channel_id),
-        limit
-    )
-    
-    if not selections:
-        await interaction.followup.send("📝 История выборов пуста!")
-        return
-    
-    embed = discord.Embed(
-        title="📜 История выборов",
-        color=discord.Color.gold(),
-        timestamp=datetime.now()
-    )
-    
-    for i, sel in enumerate(reversed(selections), 1):
-        timestamp = datetime.fromisoformat(sel['timestamp'])
-        members = []
-        for member_id in sel['selected']:
-            member = interaction.guild.get_member(int(member_id))
-            if member:
-                members.append(member.display_name)
-        
-        mode_emoji = {
-            'all': '👥',
-            'online': '🟢',
-            'voice': '🔊',
-            'role': '🎭'
-        }
-        
-        mode = sel['mode'].split('_')[0]
-        emoji = mode_emoji.get(mode, '🎲')
-        
-        embed.add_field(
-            name=f"{emoji} {timestamp.strftime('%d.%m.%Y %H:%M')}",
-            value=", ".join(members) if members else "Участники не найдены",
-            inline=False
-        )
-    
-    await interaction.followup.send(embed=embed)
-
-# Команда: сброс истории
-@bot.tree.command(name="reset", description="Сбросить историю использованных участников")
-async def reset_history(interaction: discord.Interaction):
-    history.reset_used_members(str(interaction.guild_id), str(interaction.channel_id))
-    
-    embed = discord.Embed(
-        title="🔄 История сброшена",
-        description="Теперь все участники снова доступны для выбора!",
-        color=discord.Color.orange()
-    )
-    
-    await interaction.response.send_message(embed=embed)
+    await interaction.followup.send(embed=embed, view=view)
 
 # Команда: помощь
 @bot.tree.command(name="help", description="Показать справку по командам бота")
 async def help_command(interaction: discord.Interaction):
     embed = discord.Embed(
         title="🤖 Справка по командам",
-        description="Бот для случайного выбора участников",
+        description="Бот для случайного выбора участников из голосового канала",
         color=discord.Color.purple()
     )
     
     embed.add_field(
         name="/random",
-        value="Выбрать случайного участника сервера\n`count` — количество участников\n`no_repeat` — без повторов",
+        value="Выбрать случайного участника из твоего голосового канала\n"
+              "• Работает только если ты в голосовом канале\n"
+              "• Выбирает из тех кто онлайн в этом канале\n"
+              "• Без повторов (автоматически)\n"
+              "• После выбора появляется кнопка «Следующий»",
         inline=False
     )
     
     embed.add_field(
-        name="/random-online",
-        value="Выбрать случайного участника онлайн\n`count` — количество\n`no_repeat` — без повторов",
+        name="➡️ Кнопка «Следующий»",
+        value="• Выбирает следующего участника\n"
+              "• Не повторяет уже выбранных\n"
+              "• Автоматически сбрасывает историю когда все выбраны\n"
+              "• Доступна 5 минут после последнего выбора",
         inline=False
     )
     
     embed.add_field(
-        name="/random-voice",
-        value="Выбрать из голосового канала\n`channel` — голосовой канал\n`count` — количество\n`no_repeat` — без повторов",
+        name="🎯 Примеры использования",
+        value="**Розыгрыш на митапе:**\n"
+              "1. Зайди в голосовой канал с участниками\n"
+              "2. Используй `/random`\n"
+              "3. Жми «Следующий» для выбора призёров\n\n"
+              "**Выбор докладчика:**\n"
+              "1. Все потенциальные докладчики в голосовом\n"
+              "2. `/random` — выбирает одного\n"
+              "3. «Следующий» если нужен запасной",
         inline=False
     )
     
-    embed.add_field(
-        name="/random-role",
-        value="Выбрать участника с ролью\n`role` — роль\n`count` — количество\n`no_repeat` — без повторов",
-        inline=False
-    )
-    
-    embed.add_field(
-        name="/history",
-        value="Показать историю выборов\n`limit` — количество записей",
-        inline=False
-    )
-    
-    embed.add_field(
-        name="/reset",
-        value="Сбросить историю использованных участников",
-        inline=False
-    )
-    
-    embed.set_footer(text="💡 Режим no_repeat не даёт выбрать участника дважды до сброса истории")
+    embed.set_footer(text="💡 Бот запоминает выбранных и не повторяет их до сброса истории")
     
     await interaction.response.send_message(embed=embed)
 

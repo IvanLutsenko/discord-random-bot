@@ -71,7 +71,7 @@ history = SelectionHistory()
 # View с кнопкой "Следующий"
 class NextButton(View):
     def __init__(self, voice_channel: discord.VoiceChannel, guild_id: str, channel_id: str):
-        super().__init__(timeout=none)
+        super().__init__(timeout=None)
         self.voice_channel = voice_channel
         self.guild_id = guild_id
         self.channel_id = channel_id

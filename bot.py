@@ -247,4 +247,5 @@ if __name__ == "__main__":
         print("Установи переменную окружения DISCORD_BOT_TOKEN")
         exit(1)
     
-    bot.run(TOKEN)
+    def start_bot():
+        bot.run(TOKEN)

@@ -238,14 +238,17 @@ async def help_command(interaction: discord.Interaction):
     
     await interaction.response.send_message(embed=embed)
 
-# Запуск бота
-if __name__ == "__main__":
+# Функция запуска бота (используется в run.py)
+def start_bot():
     TOKEN = os.getenv('DISCORD_BOT_TOKEN')
-    
+
     if not TOKEN:
         print("❌ ОШИБКА: Не найден токен бота!")
         print("Установи переменную окружения DISCORD_BOT_TOKEN")
         exit(1)
-    
-    def start_bot():
-        bot.run(TOKEN)
+
+    bot.run(TOKEN)
+
+# Запуск бота напрямую
+if __name__ == "__main__":
+    start_bot()

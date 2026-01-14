@@ -4,8 +4,6 @@
 
 > 🚀 **Бот уже работает!** Просто [добавь на свой сервер](https://discord.com/oauth2/authorize?client_id=1440626365324853271&permissions=2147502080&integration_type=0&scope=bot+applications.commands) и начинай использовать.
 
-[![Deploy on Railway](https://railway.app/button.svg)](https://railway.app/template)
-
 ---
 
 ## 👥 Для пользователей
@@ -62,9 +60,19 @@
 
 ### Как поднять своего бота
 
-#### Вариант А: Deploy на Railway (рекомендуется)
+#### Вариант А: Deploy на Fly.io (рекомендуется)
 
-**Самый простой способ — бот работает 24/7 бесплатно:**
+**Самый простой способ — бот работает 24/7 бесплатно.**
+
+> 📝 **Почему Fly.io, а не Railway?**
+>
+> Раньше бот хостился на Railway, но их бесплатный тариф не подходит для Discord ботов:
+>
+> 1. **Лимит по часам** — Railway даёт **$5 кредитов/месяц** (~500 часов), а Discord бот должен работать **24/7** (~720 часов/месяц). После первого месяца бот просто останавливается.
+>
+> 2. **Serverless архитектура** — бесплатный Railway работает как "лямбды": приложение засыпает без активности и просыпается по запросу. Но Discord бот требует **постоянного WebSocket соединения** с Discord Gateway. Когда бот "спит", Discord разрывает соединение → бот уходит в оффлайн и перестаёт получать команды.
+>
+> **Fly.io** предоставляет **3 полноценных VM бесплатно** — не serverless, а настоящие серверы которые работают 24/7. Бот держит постоянное соединение и всегда онлайн.
 
 1. **Fork этот репозиторий**
    - Нажми **Fork** справа сверху на GitHub
@@ -81,26 +89,35 @@
 3. **Пригласи бота на сервер**
    - **OAuth2** → **URL Generator**
    - Scopes: `bot` + `applications.commands`
-   - Bot Permissions: 
+   - Bot Permissions:
      - Send Messages
      - Embed Links
      - Use Slash Commands
      - View Channels
    - Открой сгенерированный URL → выбери сервер
 
-4. **Deploy на Railway**
-   - Зайди на https://railway.app (Sign up with GitHub)
-   - **New Project** → **Deploy from GitHub repo**
-   - Выбери свой форк `discord-random-bot`
-   - **Variables** → **+ New Variable:**
-     - Name: `DISCORD_BOT_TOKEN`
-     - Value: *твой токен*
-   - Railway автоматически задеплоит за 2 минуты
+4. **Установи Fly CLI**
+   ```bash
+   # macOS / Linux
+   curl -L https://fly.io/install.sh | sh
 
-5. **Готово!** 🎉
+   # После установки
+   fly auth login
+   ```
+
+5. **Deploy на Fly.io**
+   ```bash
+   cd discord-random-bot
+   fly launch --no-deploy --copy-config --yes
+   fly secrets set DISCORD_BOT_TOKEN=твой_токен_здесь
+   fly deploy
+   ```
+
+6. **Готово!** 🎉
    - Бот онлайн 24/7
-   - 500 часов бесплатно в месяц
-   - Автообновление при push в GitHub
+   - Бесплатно в рамках free tier
+   - `fly logs` для просмотра логов
+   - `fly status` для проверки статуса
 
 #### Вариант Б: Локальный запуск
 
@@ -145,14 +162,17 @@
 ```
 discord-random-bot/
 ├── bot.py              # Основной код бота
+├── web.py              # FastAPI сервер для health checks
+├── run.py              # Запуск бота + веб-сервера
 ├── requirements.txt    # Зависимости Python
-├── Procfile           # Конфигурация для Railway/Heroku
-├── railway.toml       # Настройки Railway
-├── runtime.txt        # Версия Python
-├── .env.example       # Пример конфигурации
-├── .gitignore         # Игнорируемые файлы
-├── README.md          # Эта документация
-└── history.json       # История выборов (создаётся автоматически)
+├── Dockerfile          # Контейнеризация для Fly.io
+├── fly.toml            # Конфигурация Fly.io
+├── .dockerignore       # Исключения для Docker
+├── .env.example        # Пример конфигурации
+├── .gitignore          # Игнорируемые файлы
+├── FLY_DEPLOY.md       # Подробная инструкция по деплою
+├── README.md           # Эта документация
+└── history.json        # История выборов (создаётся автоматически)
 ```
 
 #### 🔧 Как добавить новые команды
@@ -259,23 +279,12 @@ python bot.py
 
 #### 📈 Деплой на другие платформы
 
-**Render.com:**
+**Fly.io (рекомендуется):**
 ```bash
-# Build Command:
-pip install -r requirements.txt
-
-# Start Command:
-python bot.py
-
-# Environment Variables:
-DISCORD_BOT_TOKEN=твой_токен
-```
-
-**Heroku:**
-```bash
-heroku create
-heroku config:set DISCORD_BOT_TOKEN=твой_токен
-git push heroku main
+fly auth login
+fly launch --no-deploy --copy-config --yes
+fly secrets set DISCORD_BOT_TOKEN=твой_токен
+fly deploy
 ```
 
 **VPS (systemd service):**
@@ -296,6 +305,12 @@ Restart=always
 WantedBy=multi-user.target
 ```
 
+**Docker:**
+```bash
+docker build -t discord-random-bot .
+docker run -e DISCORD_BOT_TOKEN=твой_токен discord-random-bot
+```
+
 #### 📄 Лицензия
 
 MIT License — делай с кодом что хочешь!
@@ -305,7 +320,7 @@ MIT License — делай с кодом что хочешь!
 ## 🔗 Полезные ссылки
 
 - [Discord Developer Portal](https://discord.com/developers/applications)
-- [Railway Documentation](https://docs.railway.app/)
+- [Fly.io Documentation](https://fly.io/docs/)
 - [discord.py Documentation](https://discordpy.readthedocs.io/)
 
 ---
